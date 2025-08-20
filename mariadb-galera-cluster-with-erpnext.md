@@ -1,3 +1,80 @@
+# After deploy :
+
+Ah—that error is because the ProxySQL admin interface uses a SQLite-style grammar, not MySQL’s. So ON DUPLICATE KEY UPDATE isn’t supported there. Use INSERT OR REPLACE (or do a DELETE+INSERT) and then load to runtime + save to disk.
+
+Run these exactly in the ProxySQL admin shell (mysql -h 127.0.0.1 -P6032 -u admin -padmin):
+
+1) Register your Galera backends
+-- Either replace all rows:
+DELETE FROM mysql_servers WHERE hostgroup_id=0;
+
+-- Then add nodes (one row per node)
+INSERT OR REPLACE INTO mysql_servers (hostgroup_id, hostname, port) VALUES (0,'mariadb-galera-node1',3306);
+INSERT OR REPLACE INTO mysql_servers (hostgroup_id, hostname, port) VALUES (0,'mariadb-galera-node2',3306);
+INSERT OR REPLACE INTO mysql_servers (hostgroup_id, hostname, port) VALUES (0,'mariadb-galera-node3',3306);
+
+LOAD MYSQL SERVERS TO RUNTIME;
+SAVE MYSQL SERVERS TO DISK;
+
+-- sanity
+SELECT * FROM runtime_mysql_servers;
+
+2) Add frontend users (root for bench, user01 for app)
+-- Add/replace root and user01
+INSERT OR REPLACE INTO mysql_users
+  (username,password,active,default_hostgroup,transaction_persistent,fast_forward)
+VALUES
+  ('root','root-password',1,0,1,0);
+
+INSERT OR REPLACE INTO mysql_users
+  (username,password,active,default_hostgroup,transaction_persistent,fast_forward)
+VALUES
+  ('user01','user01-password',1,0,1,0);
+
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;
+
+-- sanity
+SELECT username,active,default_hostgroup FROM runtime_mysql_users;
+
+
+(If your ProxySQL version complains about columns, use the minimal set: username,password,active,default_hostgroup and omit the others.)
+
+3) Make sure Galera accepts root from %
+
+On any Galera node (port 3306, directly to MariaDB):
+
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root-password';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
+CREATE USER IF NOT EXISTS 'user01'@'%' IDENTIFIED BY 'user01-password';
+GRANT ALL PRIVILEGES ON *.* TO 'user01'@'%';
+
+FLUSH PRIVILEGES;
+SELECT user,host FROM mysql.user WHERE user IN ('root','user01');
+
+4) Quick auth test from an ERPNext container
+mysql -h proxysql -P6033 -uroot -proot-password -e "SHOW DATABASES;"
+
+
+If this fails → recheck step 2 (are users in runtime_mysql_users? password exactly right?).
+
+If it passes → proceed with site creation:
+
+bench new-site dev-erp.arcapps.org \
+  --mariadb-root-username root \
+  --mariadb-root-password root-password \
+  --db-name my_database \
+  --db-password user01-password
+
+bench --site dev-erp.arcapps.org install-app erpnext
+
+
+That should clear the 1045 you were seeing.
+
+
+
+
 # Config Compose:
 
 ```
@@ -51,143 +128,9 @@ mysql_query_rules =
 # Stack Compose : 
 
 ```
-version: "3.7"
+version: "3.8"
 
 services:
-  mariadb-galera-node1:
-    image: docker.io/bitnami/mariadb-galera:11.8
-    hostname: mariadb-galera-node1
-    deploy:
-      restart_policy:
-        condition: on-failure
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 8G
-        reservations:
-          cpus: '1.0'
-          memory: 4G
-    volumes:
-      - 'mariadb_galera_data_node1:/bitnami/mariadb'
-    environment:
-      - MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes
-      - MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes
-      - MARIADB_ROOT_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_MARIABACKUP_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_USER=my_user
-      - MARIADB_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
-      - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      - MARIADB_GALERA_NODE_ADDRESS=mariadb-galera-node1
-      - MARIADB_CHARACTER_SET=utf8mb4
-      - MARIADB_COLLATE=utf8mb4_unicode_ci
-      - MARIADB_EXTRA_FLAGS=--skip-character-set-client-handshake
-    networks:
-      - erp-db-network
-    healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
-      interval: 15s
-      timeout: 5s
-      retries: 6
-
-  mariadb-galera-node2:
-    image: docker.io/bitnami/mariadb-galera:11.8
-    hostname: mariadb-galera-node2
-    deploy:
-      restart_policy:
-        condition: on-failure
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 8G
-        reservations:
-          cpus: '1.0'
-          memory: 4G
-    volumes:
-      - 'mariadb_galera_data_node2:/bitnami/mariadb'
-    environment:
-      - MARIADB_GALERA_CLUSTER_BOOTSTRAP=no
-      - MARIADB_GALERA_SST_RETRY=1
-      - MARIADB_ROOT_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_MARIABACKUP_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_USER=my_user
-      - MARIADB_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
-      - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      - MARIADB_GALERA_NODE_ADDRESS=mariadb-galera-node2
-      - MARIADB_CHARACTER_SET=utf8mb4
-      - MARIADB_COLLATE=utf8mb4_unicode_ci
-      - MARIADB_EXTRA_FLAGS=--skip-character-set-client-handshake
-    networks:
-      - erp-db-network
-    depends_on:
-      - mariadb-galera-node1
-    healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
-      interval: 15s
-      timeout: 5s
-      retries: 6
-
-  mariadb-galera-node3:
-    image: docker.io/bitnami/mariadb-galera:11.8
-    hostname: mariadb-galera-node3
-    deploy:
-      restart_policy:
-        condition: on-failure
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 8G
-        reservations:
-          cpus: '1.0'
-          memory: 4G
-    volumes:
-      - 'mariadb_galera_data_node3:/bitnami/mariadb'
-    environment:
-      - MARIADB_GALERA_CLUSTER_BOOTSTRAP=no
-      - MARIADB_GALERA_SST_RETRY=1
-      - MARIADB_ROOT_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_MARIABACKUP_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_USER=my_user
-      - MARIADB_PASSWORD=oHY8kNc2qKuuNJTKPjpk
-      - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
-      - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      - MARIADB_GALERA_NODE_ADDRESS=mariadb-galera-node3
-      - MARIADB_CHARACTER_SET=utf8mb4
-      - MARIADB_COLLATE=utf8mb4_unicode_ci
-      - MARIADB_EXTRA_FLAGS=--skip-character-set-client-handshake
-    networks:
-      - erp-db-network
-    depends_on:
-      - mariadb-galera-node1
-      - mariadb-galera-node2
-    healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
-      interval: 15s
-      timeout: 5s
-      retries: 6
-
-  # ProxySQL Load Balancer
-  proxysql:
-    image: proxysql/proxysql:2.5.5
-    deploy:
-      restart_policy:
-        condition: always
-    ports:
-      - "6033:6033"  # MySQL Client Port
-      - "6032:6032"  # Admin Web GUI/API Port
-    volumes:
-      - proxysql_data:/var/lib/proxysql
-    configs:
-      - source: proxysql
-        target: /etc/proxysql.cnf:ro
-    networks:
-      - erp-db-network
-    depends_on:
-      - mariadb-galera-node1
-      - mariadb-galera-node2
-      - mariadb-galera-node3
-  
   backend:
     image: registry.gitlab.com/arcapps/arc-container-registry/erpnext-v14:v2.0.5
     deploy:
@@ -205,13 +148,13 @@ services:
         max_attempts: 3
     environment:
       GUNICORN_CMD_ARGS: "--workers 9 --max-requests 5000 --max-requests-jitter 1000"
-      DB_HOST: proxysql  # Changed from mariadb-master to proxysql
-      DB_PORT: "6033"    # Changed to ProxySQL port
+      DB_HOST: proxysql
+      DB_PORT: "6033"
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network
     depends_on:
       - proxysql
@@ -234,8 +177,8 @@ services:
         bench set-config -g redis_socketio "redis://$$REDIS_SOCKETIO";
         bench set-config -gp socketio_port $$SOCKETIO_PORT;
     environment:
-      DB_HOST: proxysql    # Changed from mariadb-master to proxysql
-      DB_PORT: "6033"      # Changed to ProxySQL port
+      DB_HOST: proxysql
+      DB_PORT: "6033"
       REDIS_CACHE: redis-cache:6379
       REDIS_QUEUE: redis-queue:6379
       REDIS_SOCKETIO: redis-socketio:6379
@@ -244,7 +187,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:
-      - erp-db-network
+      - galera-network
     depends_on:
       - proxysql
   
@@ -258,18 +201,14 @@ services:
         traefik.docker.network: traefik-public
         traefik.enable: "true"
         traefik.constraint-label: traefik-public
-        # Change router name prefix from erpnext- to the name of stack in case of multi bench setup
         traefik.http.routers.erpnext-testing--http.rule: Host(${SITES:?No sites set})
         traefik.http.routers.erpnext-testing--http.entrypoints: http
-        # Remove following lines in case of local setup
         traefik.http.routers.erpnext-testing--http.middlewares: https-redirect
         traefik.http.routers.erpnext-testing--https.rule: Host(${SITES})
         traefik.http.routers.erpnext-testing--https.entrypoints: https
         traefik.http.routers.erpnext-testing--https.tls: "true"
         traefik.http.routers.erpnext-testing--https.tls.certresolver: le
-        # Remove above lines in case of local setup
         traefik.http.services.erpnext-testing-.loadbalancer.server.port: "8080"    
-
     command:
       - nginx-entrypoint.sh
     environment:
@@ -285,7 +224,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:
-      - erp-db-network
+      - galera-network
       - erp-bench-network
       - traefik-public 
 
@@ -308,7 +247,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network   
 
   queue-long:
@@ -326,7 +265,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network   
 
   queue-short:
@@ -344,7 +283,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network   
 
   redis-queue:
@@ -393,7 +332,7 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network   
 
   websocket:
@@ -412,36 +351,25 @@ services:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
     networks:  
-      - erp-db-network
+      - galera-network
       - erp-bench-network   
 
-configs:
-  proxysql:
-    external: true
-
-
 volumes:
-  db-data:
   redis-queue-data:
   redis-cache-data:
   redis-socketio-data:
   sites:
   logs:
-  mariadb_galera_data_node1:
-  mariadb_galera_data_node2:
-  mariadb_galera_data_node3:
-  proxysql_data:
 
 networks:
   erp-bench-network:
     name: erp-bench-network
     external: false
-  erp-db-network:
-    name: erp-db-network
-    external: false
+  galera-network:
+    name: galera-network
+    external: true
   traefik-public:
     name: traefik-public
     external: true
-
 
 ```
