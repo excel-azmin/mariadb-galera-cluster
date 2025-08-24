@@ -2,10 +2,17 @@
 
 Ah—that error is because the ProxySQL admin interface uses a SQLite-style grammar, not MySQL’s. So ON DUPLICATE KEY UPDATE isn’t supported there. Use INSERT OR REPLACE (or do a DELETE+INSERT) and then load to runtime + save to disk.
 
+
 Run these exactly in the ProxySQL admin shell (mysql -h 127.0.0.1 -P6032 -u admin -padmin):
 
+
 1) Register your Galera backends
+
+
+```
+
 -- Either replace all rows:
+
 DELETE FROM mysql_servers WHERE hostgroup_id=0;
 
 -- Then add nodes (one row per node)
@@ -19,8 +26,14 @@ SAVE MYSQL SERVERS TO DISK;
 -- sanity
 SELECT * FROM runtime_mysql_servers;
 
+```
+
 2) Add frontend users (root for bench, user01 for app)
+
+
+```
 -- Add/replace root and user01
+
 INSERT OR REPLACE INTO mysql_users
   (username,password,active,default_hostgroup,transaction_persistent,fast_forward)
 VALUES
@@ -38,14 +51,20 @@ SAVE MYSQL USERS TO DISK;
 SELECT username,active,default_hostgroup FROM runtime_mysql_users;
 
 
+```
+
 (If your ProxySQL version complains about columns, use the minimal set: username,password,active,default_hostgroup and omit the others.)
+
 
 3) Make sure Galera accepts root from %
 
+
 On any Galera node (port 3306, directly to MariaDB):
 
+```
 CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root-password';
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
 
 CREATE USER IF NOT EXISTS 'user01'@'%' IDENTIFIED BY 'user01-password';
 GRANT ALL PRIVILEGES ON *.* TO 'user01'@'%';
@@ -53,13 +72,21 @@ GRANT ALL PRIVILEGES ON *.* TO 'user01'@'%';
 FLUSH PRIVILEGES;
 SELECT user,host FROM mysql.user WHERE user IN ('root','user01');
 
+```
+
 4) Quick auth test from an ERPNext container
-mysql -h proxysql -P6033 -uroot -proot-password -e "SHOW DATABASES;"
+
+
+`mysql -h proxysql -P6033 -uroot -proot-password -e "SHOW DATABASES;"`
+
 
 
 If this fails → recheck step 2 (are users in runtime_mysql_users? password exactly right?).
 
+
 If it passes → proceed with site creation:
+
+```
 
 bench new-site dev-erp.arcapps.org \
   --mariadb-root-username root \
@@ -69,9 +96,28 @@ bench new-site dev-erp.arcapps.org \
 
 bench --site dev-erp.arcapps.org install-app erpnext
 
+```
+
 
 That should clear the 1045 you were seeing.
 
+
+# Extra Notes : 
+
+This config I'm able to run the apps: 
+
+```
+frappe@a4d90647657c:~/frappe-bench$ cat sites/common_site_config.json 
+{
+ "db_host": "mariadb-galera-node1",
+ "db_port": 3306,
+ "redis_cache": "redis://redis-cache:6379",
+ "redis_queue": "redis://redis-queue:6379",
+ "redis_socketio": "redis://redis-socketio:6379",
+ "socketio_port": 9000
+}
+
+```
 
 
 
