@@ -3,7 +3,7 @@
 ```
 datadir="/var/lib/proxysql"
 
-admin_variables =
+admin_variables=
 {
     admin_credentials="admin:admin;radmin:radmin"
     mysql_ifaces="0.0.0.0:6032"
@@ -13,7 +13,7 @@ admin_variables =
     stats_credentials="stats:stats"
 }
 
-mysql_variables =
+mysql_variables=
 {
     threads=4
     max_connections=2048
@@ -39,7 +39,7 @@ mysql_variables =
 }
 
 # Define hostgroups: 0=writer, 1=reader
-mysql_servers =
+mysql_servers=
 (
     # Writer group (hostgroup 0) - all nodes can write in Galera
     { address="mariadb-galera-node1", port=3306, hostgroup=0, weight=900, max_connections=200, max_replication_lag=0 },
@@ -52,143 +52,158 @@ mysql_servers =
     { address="mariadb-galera-node3", port=3306, hostgroup=1, weight=900, max_connections=200, max_replication_lag=0 }
 )
 
-mysql_users =
+mysql_users=
 (
     { username="user01", password="user01-password", default_hostgroup=0, max_connections=500, active=1 },
     { username="root", password="root-password", default_hostgroup=0, max_connections=100, active=1 }
 )
 
-# Query routing rules for ERPNext optimization
-mysql_query_rules =
+# Optimized query routing rules for ERPNext
+mysql_query_rules=
 (
-    # Route SELECT queries to reader hostgroup for load balancing
+    # Route SELECT queries with FOR UPDATE/LOCK to writers (critical for ERPNext transactions)
     {
         rule_id=1
-        active=1
-        match_pattern="^SELECT.*"
-        destination_hostgroup=1
-        apply=1
-        comment="Route SELECT to readers"
-    },
-    
-    # Route SELECT queries with FOR UPDATE to writers (critical for ERPNext)
-    {
-        rule_id=2
         active=1
         match_pattern="^SELECT.*FOR UPDATE.*"
         destination_hostgroup=0
         apply=1
-        comment="Route SELECT FOR UPDATE to writers"
     },
     
-    # Route INSERT, UPDATE, DELETE to writers
+    {
+        rule_id=2
+        active=1
+        match_pattern="^SELECT.*LOCK IN SHARE MODE.*"
+        destination_hostgroup=0
+        apply=1
+    },
+    
+    # Route transaction control statements to writers
     {
         rule_id=3
         active=1
-        match_pattern="^INSERT.*"
+        match_pattern="^BEGIN.*"
         destination_hostgroup=0
         apply=1
-        comment="Route INSERT to writers"
     },
     
     {
         rule_id=4
         active=1
-        match_pattern="^UPDATE.*"
+        match_pattern="^START TRANSACTION.*"
         destination_hostgroup=0
         apply=1
-        comment="Route UPDATE to writers"
     },
     
     {
         rule_id=5
         active=1
-        match_pattern="^DELETE.*"
+        match_pattern="^COMMIT.*"
         destination_hostgroup=0
         apply=1
-        comment="Route DELETE to writers"
     },
     
-    # Route DDL statements to writers
     {
         rule_id=6
         active=1
-        match_pattern="^ALTER.*"
+        match_pattern="^ROLLBACK.*"
         destination_hostgroup=0
         apply=1
-        comment="Route ALTER to writers"
     },
     
+    # Route write operations to writers
     {
         rule_id=7
         active=1
-        match_pattern="^CREATE.*"
+        match_pattern="^INSERT.*"
         destination_hostgroup=0
         apply=1
-        comment="Route CREATE to writers"
     },
     
     {
         rule_id=8
         active=1
-        match_pattern="^DROP.*"
+        match_pattern="^UPDATE.*"
         destination_hostgroup=0
         apply=1
-        comment="Route DROP to writers"
     },
     
-    # Route transactions and session-specific queries to writers
     {
         rule_id=9
         active=1
-        match_pattern="^BEGIN.*"
+        match_pattern="^DELETE.*"
         destination_hostgroup=0
         apply=1
-        comment="Route BEGIN to writers"
     },
     
     {
         rule_id=10
         active=1
-        match_pattern="^COMMIT.*"
+        match_pattern="^REPLACE.*"
         destination_hostgroup=0
         apply=1
-        comment="Route COMMIT to writers"
     },
     
+    # Route DDL statements to writers
     {
         rule_id=11
         active=1
-        match_pattern="^ROLLBACK.*"
+        match_pattern="^CREATE.*"
         destination_hostgroup=0
         apply=1
-        comment="Route ROLLBACK to writers"
     },
     
-    # Route SHOW and DESCRIBE to readers
     {
         rule_id=12
         active=1
-        match_pattern="^SHOW.*"
-        destination_hostgroup=1
+        match_pattern="^ALTER.*"
+        destination_hostgroup=0
         apply=1
-        comment="Route SHOW to readers"
     },
     
     {
         rule_id=13
         active=1
-        match_pattern="^DESCRIBE.*"
+        match_pattern="^DROP.*"
+        destination_hostgroup=0
+        apply=1
+    },
+    
+    {
+        rule_id=14
+        active=1
+        match_pattern="^TRUNCATE.*"
+        destination_hostgroup=0
+        apply=1
+    },
+    
+    # Route session/connection management to writers
+    {
+        rule_id=15
+        active=1
+        match_pattern="^SET.*"
+        destination_hostgroup=0
+        apply=1
+    },
+    
+    # Route SHOW commands that might be session-specific to writers
+    {
+        rule_id=16
+        active=1
+        match_pattern="^SHOW (VARIABLES|STATUS|PROCESSLIST).*"
+        destination_hostgroup=0
+        apply=1
+    },
+    
+    # Route all other SELECT queries to readers for load balancing
+    {
+        rule_id=17
+        active=1
+        match_pattern="^SELECT.*"
         destination_hostgroup=1
         apply=1
-        comment="Route DESCRIBE to readers"
     }
 )
-
-# Connection pooling and multiplexing
-mysql_connection_pool_default_hostgroup=0
-mysql_connection_pool_default_max_connections=200
-mysql_connection_pool_default_max_latency_ms=1000
 
 ```
 
@@ -331,6 +346,161 @@ networks:
   galera-network:
     attachable: true
 
+```   
+
+# ERPNext 
+
+```
+version: "3.8"
+
+x-customizable-image: &customizable_image
+  # image: registry.gitlab.com/arcapps/arc-container-registry/erpnext-v14:v2.0.6
+  image: arcapps/erp:latest
+  deploy:
+    update_config:
+      parallelism: 1
+    rollback_config:
+      parallelism: 1
+
+x-backend-defaults: &backend_defaults
+  <<: [*customizable_image]
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+  deploy:
+    replicas: 1
+    update_config:
+      parallelism: 1
+    rollback_config:
+      parallelism: 1
+
+services:
+
+  redis-cache:
+    image: redis:6.2-alpine
+    volumes:
+      - redis-cache-data:/data
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  redis-queue:
+    image: redis:6.2-alpine
+    volumes:
+      - redis-queue-data:/data
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  configurator:
+    <<: *backend_defaults
+    entrypoint:
+      - bash
+      - -c
+    command:
+      - >
+        ls -1 apps > sites/apps.txt;
+        bench set-config -g db_host $$DB_HOST;
+        bench set-config -gp db_port $$DB_PORT;
+        bench set-config -g redis_cache "redis://$$REDIS_CACHE";
+        bench set-config -g redis_queue "redis://$$REDIS_QUEUE";
+        bench set-config -g redis_socketio "redis://$$REDIS_QUEUE";
+        bench set-config -gp socketio_port $$SOCKETIO_PORT;
+    environment:
+      DB_HOST: proxysql
+      DB_PORT: 6033
+      REDIS_CACHE: redis-cache:6379
+      REDIS_QUEUE: redis-queue:6379
+      SOCKETIO_PORT: 9000
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
+
+  backend:
+    <<: *backend_defaults
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  frontend:
+    <<: *customizable_image
+    command:
+      - nginx-entrypoint.sh
+    environment:
+      BACKEND: backend:8000
+      FRAPPE_SITE_NAME_HEADER: $$host
+      SOCKETIO: websocket:9000
+      UPSTREAM_REAL_IP_ADDRESS: ${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}
+      UPSTREAM_REAL_IP_HEADER: ${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
+      UPSTREAM_REAL_IP_RECURSIVE: ${UPSTREAM_REAL_IP_RECURSIVE:-off}
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - galera-network
+    ports:
+      - "9630:8080"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      
+    depends_on:
+      - backend
+      - websocket
+
+  websocket:
+    <<: [*customizable_image]
+    command:
+      - node
+      - /home/frappe/frappe-bench/apps/frappe/socketio.js
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  queue-short:
+    <<: *backend_defaults
+    command: bench worker --queue short,default
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  queue-long:
+    <<: *backend_defaults
+    command: bench worker --queue long,default,short
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+  scheduler:
+    <<: *backend_defaults
+    command: bench schedule
+    networks:
+      - galera-network
+    deploy:
+      replicas: 1
+
+volumes:
+  sites:
+  redis-cache-data:
+  redis-queue-data:
+
+networks:
+  galera-network:
+    attachable: true
 
 
-```    
+```
+
