@@ -204,115 +204,118 @@ services:
     image: docker.io/bitnami/mariadb-galera:10.6
     hostname: mariadb-galera-node1
     ports:
-      - '3306:3306'
+      - "3306:3306"
     volumes:
-      - 'mariadb_galera_data_node1:/bitnami/mariadb'
+      - mariadb_galera_data_node1:/bitnami/mariadb
     environment:
+      - MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes
       - MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes
       - MARIADB_ROOT_PASSWORD=root-password
       - MARIADB_GALERA_MARIABACKUP_PASSWORD=backup-password
       - MARIADB_USER=user01
-      - MARIADB_PASSWORD=user01-password 
+      - MARIADB_PASSWORD=user01-password
       - MARIADB_DATABASE=my_database
       - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
       - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      # ERPNext specific settings
       - MARIADB_EXTRA_FLAGS=--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --skip-character-set-client-handshake --skip-innodb-read-only-compressed --innodb-buffer-pool-size=1G --innodb-log-file-size=256M --max-connections=500
     networks:
-      - galera-network
+      galera-network:
+        aliases:
+          - mariadb-galera-node1
     healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
+      test: ["CMD", "/opt/bitnami/scripts/mariadb-galera/healthcheck.sh"]
       interval: 15s
       timeout: 5s
       retries: 6
-      
 
   # MariaDB Galera Cluster Node 2
   mariadb-galera-node2:
     image: docker.io/bitnami/mariadb-galera:10.6
     hostname: mariadb-galera-node2
     ports:
-      - '3307:3306'
+      - "3307:3306"
     volumes:
-      - 'mariadb_galera_data_node2:/bitnami/mariadb'
+      - mariadb_galera_data_node2:/bitnami/mariadb
     environment:
       - MARIADB_GALERA_CLUSTER_BOOTSTRAP=no
       - MARIADB_ROOT_PASSWORD=root-password
       - MARIADB_GALERA_MARIABACKUP_PASSWORD=backup-password
       - MARIADB_USER=user01
-      - MARIADB_PASSWORD=user01-password 
+      - MARIADB_PASSWORD=user01-password
       - MARIADB_DATABASE=my_database
       - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
       - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      # ERPNext specific settings
       - MARIADB_EXTRA_FLAGS=--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --skip-character-set-client-handshake --skip-innodb-read-only-compressed --innodb-buffer-pool-size=1G --innodb-log-file-size=256M --max-connections=500
     networks:
-      - galera-network
+      galera-network:
+        aliases:
+          - mariadb-galera-node2
     depends_on:
       - mariadb-galera-node1
     healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
+      test: ["CMD", "/opt/bitnami/scripts/mariadb-galera/healthcheck.sh"]
       interval: 15s
       timeout: 5s
       retries: 6
-    
 
   # MariaDB Galera Cluster Node 3
   mariadb-galera-node3:
     image: docker.io/bitnami/mariadb-galera:10.6
     hostname: mariadb-galera-node3
     ports:
-      - '3308:3306'
+      - "3308:3306"
     volumes:
-      - 'mariadb_galera_data_node3:/bitnami/mariadb'
+      - mariadb_galera_data_node3:/bitnami/mariadb
     environment:
       - MARIADB_GALERA_CLUSTER_BOOTSTRAP=no
       - MARIADB_ROOT_PASSWORD=root-password
       - MARIADB_GALERA_MARIABACKUP_PASSWORD=backup-password
       - MARIADB_USER=user01
-      - MARIADB_PASSWORD=user01-password 
+      - MARIADB_PASSWORD=user01-password
       - MARIADB_DATABASE=my_database
       - MARIADB_GALERA_CLUSTER_NAME=galera_cluster
       - MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://mariadb-galera-node1,mariadb-galera-node2,mariadb-galera-node3
-      # ERPNext specific settings
       - MARIADB_EXTRA_FLAGS=--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --skip-character-set-client-handshake --skip-innodb-read-only-compressed --innodb-buffer-pool-size=1G --innodb-log-file-size=256M --max-connections=500
     networks:
-      - galera-network
+      galera-network:
+        aliases:
+          - mariadb-galera-node3
     depends_on:
       - mariadb-galera-node1
       - mariadb-galera-node2
     healthcheck:
-      test: ['CMD', '/opt/bitnami/scripts/mariadb-galera/healthcheck.sh']
+      test: ["CMD", "/opt/bitnami/scripts/mariadb-galera/healthcheck.sh"]
       interval: 15s
       timeout: 5s
       retries: 6
-    
-  # ProxySQL Load Balancer
+
+  # ProxySQL Load Balancer - with inline config
   proxysql:
     image: proxysql/proxysql:2.5.5
     ports:
-      - "6033:6033"  # MySQL Client Port
-      - "6032:6032"  # Admin Web GUI/API Port
-      - "6080:6080"  # Web interface
-    volumes:
-      - proxysql_data:/var/lib/proxysql
+      - "6033:6033"  # MySQL client port
+      - "6032:6032"  # Admin (MySQL protocol)
+      # 6080 is not used by stock ProxySQL; remove unless you run a sidecar UI
     configs:
       - source: proxysql
         target: /etc/proxysql.cnf
-        mode: 0644
+    volumes:
+      - proxysql_data:/var/lib/proxysql
     networks:
-      - galera-network
+      galera-network:
+        aliases:
+          - proxysql
     depends_on:
       - mariadb-galera-node1
       - mariadb-galera-node2
       - mariadb-galera-node3
     healthcheck:
-      test: ["CMD", "mysql", "-h", "127.0.0.1", "-P", "6033", "-u", "user01", "-puser01-password", "-e", "SELECT 1"]
+      test: ["CMD", "mysql", "-h", "127.0.0.1", "-P", "6033", "-u", "root", "-proot-password", "-e", "SELECT 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 40s
-    
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
 
 configs:
   proxysql:
@@ -327,6 +330,7 @@ volumes:
 networks:
   galera-network:
     attachable: true
+
 
 
 ```    
